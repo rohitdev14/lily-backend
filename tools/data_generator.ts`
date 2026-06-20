@@ -1,0 +1,221 @@
+import { ArgumentParser } from 'argparse';
+import * as fs from 'fs';
+import * as path from 'path';
+import { seedrandom } from 'seedrandom';
+
+interface SchemaField {
+  name: string;
+  type: 'string' | 'number' | 'boolean' | 'date' | 'email';
+  nullable?: boolean;
+}
+
+interface GeneratorOptions {
+  count: number;
+  format: 'json' | 'csv' | 'both';
+  output: string;
+  seed?: string;
+  schema: SchemaField[];
+}
+
+class DataGenerator {
+  private rng: () => number;
+
+  constructor(seed?: string) {
+    this.rng = seed ? seedrandom(seed) : Math.random;
+  }
+
+  private randomString(length: number = 10): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < length; i++) {
+      result += chars.charAt(Math.floor(this.rng() * chars.length));
+    }
+    return result;
+  }
+
+  private randomNumber(min: number = 0, max: number = 1000): number {
+    return Math.floor(this.rng() * (max - min + 1)) + min;
+  }
+
+  private randomBoolean(): boolean {
+    return this.rng() > 0.5;
+  }
+
+  private randomDate(): string {
+    const start = new Date(2020, 0, 1).getTime();
+    const end = new Date().getTime();
+    const timestamp = start + this.rng() * (end - start);
+    return new Date(timestamp).toISOString();
+  }
+
+  private randomEmail(): string {
+    const username = this.randomString(8).toLowerCase();
+    const domains = ['example.com', 'test.com', 'demo.org'];
+    const domain = domains[Math.floor(this.rng() * domains.length)];
+    return `${username}@${domain}`;
+  }
+
+  private generateValue(field: SchemaField): any {
+    if (field.nullable && this.rng() < 0.1) {
+      return null;
+    }
+
+    switch (field.type) {
+      case 'string':
+        return this.randomString();
+      case 'number':
+        return this.randomNumber();
+      case 'boolean':
+        return this.randomBoolean();
+      case 'date':
+        return this.randomDate();
+      case 'email':
+        return this.randomEmail();
+      default:
+        return this.randomString();
+    }
+  }
+
+  generateData(schema: SchemaField[], count: number): any[] {
+    const data = [];
+    for (let i = 0; i < count; i++) {
+      const record: any = {};
+      for (const field of schema) {
+        record[field.name] = this.generateValue(field);
+      }
+      data.push(record);
+    }
+    return data;
+  }
+
+  writeJSON(data: any[], filePath: string): void {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    console.log(`✓ JSON written to ${filePath}`);
+  }
+
+  writeCSV(data: any[], filePath: string, schema: SchemaField[]): void {
+    if (data.length === 0) {
+      fs.writeFileSync(filePath, '');
+      console.log(`✓ CSV written to ${filePath}`);
+      return;
+    }
+
+    const headers = schema.map(f => f.name).join(',');
+    const rows = data.map(record => {
+      return schema.map(field => {
+        const value = record[field.name];
+        if (value === null || value === undefined) return '';
+        const str = String(value);
+        // Escape CSV values containing commas, quotes, or newlines
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      }).join(',');
+    }).join('\n');
+
+    fs.writeFileSync(filePath, `${headers}\n${rows}`);
+    console.log(`✓ CSV written to ${filePath}`);
+  }
+}
+
+function validatePositiveInteger(value: string, name: string): number {
+  const num = parseInt(value, 10);
+  if (isNaN(num) || num < 0) {
+    throw new Error(`${name} must be a non-negative integer, got: ${value}`);
+  }
+  return num;
+}
+
+function main() {
+  const parser = new ArgumentParser({
+    description: 'Generate test data in JSON or CSV format'
+  });
+
+  parser.add_argument('-c', '--count', {
+    type: String,
+    default: '100',
+    help: 'Number of records to generate (non-negative integer)'
+  });
+
+  parser.add_argument('-f', '--format', {
+    choices: ['json', 'csv', 'both'],
+    default: 'json',
+    help: 'Output format: json, csv, or both'
+  });
+
+  parser.add_argument('-o', '--output', {
+    type: String,
+    default: './output/data',
+    help: 'Output file path (without extension)'
+  });
+
+  parser.add_argument('-s', '--seed', {
+    type: String,
+    help: 'Random seed for deterministic output'
+  });
+
+  parser.add_argument('--schema', {
+    type: String,
+    help: 'JSON schema file path (optional)'
+  });
+
+  const args = parser.parse_args();
+
+  // Validate count as non-negative integer
+  let count: number;
+  try {
+    count = validatePositiveInteger(args.count, 'count');
+  } catch (error: any) {
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
+  }
+
+  // Load or use default schema
+  let schema: SchemaField[] = [
+    { name: 'id', type: 'number' },
+    { name: 'name', type: 'string' },
+    { name: 'email', type: 'email' },
+    { name: 'active', type: 'boolean' },
+    { name: 'created_at', type: 'date' }
+  ];
+
+  if (args.schema) {
+    try {
+      const schemaContent = fs.readFileSync(args.schema, 'utf-8');
+      schema = JSON.parse(schemaContent);
+    } catch (error: any) {
+      console.error(`Error loading schema: ${error.message}`);
+      process.exit(1);
+    }
+  }
+
+  // Generate data
+  const generator = new DataGenerator(args.seed);
+  const data = generator.generateData(schema, count);
+
+  // Ensure output directory exists
+  const outputDir = path.dirname(args.output);
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  // Write output based on format
+  const format = args.format;
+  
+  if (format === 'json' || format === 'both') {
+    generator.writeJSON(data, `${args.output}.json`);
+  }
+
+  if (format === 'csv' || format === 'both') {
+    generator.writeCSV(data, `${args.output}.csv`, schema);
+  }
+
+  console.log(`✓ Generated ${count} records with seed: ${args.seed || 'random'}`);
+}
+
+if (require.main === module) {
+  main();
+}
+
+export { DataGenerator, SchemaField, GeneratorOptions };
